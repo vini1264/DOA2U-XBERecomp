@@ -1,0 +1,303 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "Dead or Alive 2 Ultimate",
+  "repo": "vini1264/DOA2U-XBERecomp",
+  "inputs": [
+    {
+      "id": "disc",
+      "label": "Your disc image (.iso) of Dead or Alive Ultimate for the original Xbox: the disc with DOA2.xbe on it.",
+      "role": "game",
+      "formats": [
+        {
+          "type": "file",
+          "extensions": [
+            "iso"
+          ]
+        }
+      ],
+      "destination": "assets/game.iso"
+    }
+  ],
+  "start": {
+    "program": [
+      "DOA2U.exe"
+    ]
+  },
+  "system": {
+    "windows": {
+      "version": "10",
+      "graphics": {
+        "d3d12": "11_0"
+      }
+    }
+  },
+  "saves": [
+    "{install}/hdd/E/UDATA",
+    "{install}/settings.toml"
+  ],
+  "folders": {
+    "saves": [
+      {
+        "path": "{install}/hdd/E/UDATA"
+      }
+    ],
+    "logs": [
+      {
+        "path": "{install}/logs"
+      }
+    ]
+  },
+  "exit_codes": {
+    "0": "ok",
+    "1": "The game didn't start: it couldn't find your disc image or couldn't build the game code. The log in the logs folder says which."
+  },
+  "config": [
+    {
+      "id": "main",
+      "format": "toml",
+      "file": [
+        {
+          "path": "{install}/settings.toml"
+        }
+      ]
+    }
+  ],
+  "settings": [
+    {
+      "id": "display_mode",
+      "label": "Window",
+      "group": "Display",
+      "help": "Borderless fills your screen and lets you switch apps quickly. Fullscreen gives the game the screen to itself.",
+      "choices": [
+        {
+          "label": "Borderless",
+          "set": {
+            "display_mode": "'borderless'"
+          }
+        },
+        {
+          "label": "Fullscreen",
+          "set": {
+            "display_mode": "'fullscreen'"
+          }
+        },
+        {
+          "label": "Windowed",
+          "set": {
+            "display_mode": "'windowed'"
+          }
+        }
+      ],
+      "defaults": {
+        "display_mode": "'borderless'"
+      }
+    },
+    {
+      "id": "render_percent",
+      "label": "Render resolution",
+      "group": "Display",
+      "help": "What the game draws at, as a share of your screen's height. Above 100% is sharper and needs a faster graphics card.",
+      "choices": [
+        {
+          "label": "50%",
+          "set": {
+            "render_percent": "50"
+          }
+        },
+        {
+          "label": "75%",
+          "set": {
+            "render_percent": "75"
+          }
+        },
+        {
+          "label": "100%",
+          "set": {
+            "render_percent": "100"
+          }
+        },
+        {
+          "label": "150%",
+          "set": {
+            "render_percent": "150"
+          }
+        },
+        {
+          "label": "200%",
+          "set": {
+            "render_percent": "200"
+          }
+        }
+      ],
+      "defaults": {
+        "render_percent": "100"
+      }
+    },
+    {
+      "id": "vsync",
+      "label": "V-Sync",
+      "group": "Display",
+      "help": "Waits for the screen's refresh, so the picture never tears.",
+      "choices": [
+        {
+          "label": "On",
+          "set": {
+            "vsync": "true"
+          }
+        },
+        {
+          "label": "Off",
+          "set": {
+            "vsync": "false"
+          }
+        }
+      ],
+      "defaults": {
+        "vsync": "true"
+      }
+    },
+    {
+      "id": "fps_cap",
+      "label": "Frame rate limit",
+      "group": "Display",
+      "help": "60 is the console's own frame rate.",
+      "choices": [
+        {
+          "label": "60",
+          "set": {
+            "fps_cap": "60"
+          }
+        },
+        {
+          "label": "Monitor refresh rate",
+          "set": {
+            "fps_cap": "1"
+          }
+        },
+        {
+          "label": "Unlimited",
+          "set": {
+            "fps_cap": "0"
+          }
+        }
+      ],
+      "defaults": {
+        "fps_cap": "60"
+      }
+    },
+    {
+      "id": "anisotropic_filtering",
+      "label": "Texture filtering",
+      "group": "Display",
+      "help": "Keeps floors and walls sharp at shallow angles. Costs next to nothing.",
+      "choices": [
+        {
+          "label": "Game's own",
+          "set": {
+            "anisotropic_filtering": "0"
+          }
+        },
+        {
+          "label": "2x",
+          "set": {
+            "anisotropic_filtering": "2"
+          }
+        },
+        {
+          "label": "4x",
+          "set": {
+            "anisotropic_filtering": "4"
+          }
+        },
+        {
+          "label": "8x",
+          "set": {
+            "anisotropic_filtering": "8"
+          }
+        },
+        {
+          "label": "16x",
+          "set": {
+            "anisotropic_filtering": "16"
+          }
+        }
+      ],
+      "defaults": {
+        "anisotropic_filtering": "0"
+      }
+    },
+    {
+      "id": "custom_textures",
+      "label": "Custom textures",
+      "group": "Display",
+      "help": "Uses replacement textures from the textures\\replacement folder, when there are any.",
+      "choices": [
+        {
+          "label": "On",
+          "set": {
+            "custom_textures": "true"
+          }
+        },
+        {
+          "label": "Off",
+          "set": {
+            "custom_textures": "false"
+          }
+        }
+      ],
+      "defaults": {
+        "custom_textures": "true"
+      }
+    },
+    {
+      "id": "audio_output",
+      "label": "Audio output",
+      "group": "Sound",
+      "help": "Automatic follows your speakers.",
+      "choices": [
+        {
+          "label": "Automatic",
+          "set": {
+            "audio_output": "0"
+          }
+        },
+        {
+          "label": "Stereo",
+          "set": {
+            "audio_output": "1"
+          }
+        },
+        {
+          "label": "Surround",
+          "set": {
+            "audio_output": "2"
+          }
+        },
+        {
+          "label": "Mono",
+          "set": {
+            "audio_output": "3"
+          }
+        }
+      ],
+      "defaults": {
+        "audio_output": "0"
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "saves",
+      "label": "Saves",
+      "help": "The game's save data.",
+      "open": "saves"
+    },
+    {
+      "id": "logs",
+      "label": "Logs",
+      "help": "A log of each session, to send with a bug report.",
+      "open": "logs"
+    }
+  ]
+}
