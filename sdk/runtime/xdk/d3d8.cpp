@@ -197,6 +197,7 @@ void Release(X86Context& ctx, uint32_t res) {
 }
 
 void Walk(uint32_t end);
+void RunCallbacks(X86Context& ctx);
 
 // Hardware commands a caller still pushes go to a scratch buffer, rewound at every request once Walk has read it
 uint32_t ScratchPush(uint32_t bytes = 0) {
@@ -375,6 +376,14 @@ void VerticalBlank(X86Context& ctx) {
 
 gpu::State& State() { return g_state; }
 std::recursive_mutex& Lock() { return g_lock; }
+// what the GPU owes the title: the commands pushed so far are read, then the GPU is made idle and every report asked
+// for is written. A title polling a visibility test in a loop gets its result this way (the console's GPU runs on
+// while the title spins; the host's waits for the next swap, which the spinning title never reaches).
+void FinishReports() {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    if (g_backend && g_backend->ReportsPending()) g_backend->Flush();
+}
 
 }  // namespace d3d
 
@@ -709,6 +718,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     }
     if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
     app::Pace();
+    RunCallbacks(ctx);
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
     for (uint32_t i = g_buffer_count - 1; i > 0; i--) {
@@ -1349,6 +1359,44 @@ void ApplyVisibilityMethod(uint32_t m, uint32_t v) {
     if (m == gpu::kMGetReport) g_backend->GetReport(mem::VirtualFromPhysical(v & kReportAddressMask));
 }
 
+// D3DDevice_InsertCallback: the callback and its context, then a no operation whose value asks the library's interrupt
+// to call it, 6 at once (D3DCALLBACK_WRITE) or 7 after a wait for idle (D3DCALLBACK_READ). Run at the end of the frame
+// once the reports asked for before it are written, as a read callback finds them on the console.
+struct Callback {
+    uint32_t fn, context;
+};
+std::vector<Callback> g_callbacks;
+uint32_t g_callback_fn = 0, g_callback_context = 0, g_callback_waits = 0;
+
+void ApplyCallbackMethod(uint32_t m, uint32_t v) {
+    constexpr uint32_t kMNoOperation = 0x100, kMCallback = 0x1D8C, kMCallbackContext = 0x1D90;
+    constexpr uint32_t kWriteCallback = 6, kReadCallback = 7;
+    if (m == kMCallback) {
+        g_callback_fn = v;
+    } else if (m == kMCallbackContext) {
+        g_callback_context = v;
+    } else if (m == kMNoOperation && (v == kWriteCallback || v == kReadCallback) && g_callback_fn) {
+        g_callbacks.push_back({g_callback_fn, g_callback_context});
+        g_callback_fn = 0;
+    }
+}
+
+void RunCallbacks(X86Context& ctx) {
+    constexpr uint32_t kMostWaits = 3;  // frames a callback waits for its reports before the GPU is made idle
+    if (g_callbacks.empty()) return;
+    if (g_backend && g_backend->ReportsPending()) {
+        if (++g_callback_waits < kMostWaits) return;
+        g_backend->Flush();
+    }
+    g_callback_waits = 0;
+    std::vector<Callback> run;
+    run.swap(g_callbacks);
+    for (const Callback& c : run) {
+        LOG_FIRST(4, "d3d: callback %08X (%08X) runs at the end of the frame", c.fn, c.context);
+        CallGuest(ctx, c.fn, {c.context});
+    }
+}
+
 // draws the open primitive: the slots it wrote are FLOAT4 inputs of the bound program, or of the fixed pipeline
 void EndPrimitive() {
     struct Made {
@@ -1471,6 +1519,7 @@ void Walk(uint32_t end) {
             uint32_t m = head & 0x40000000 ? method : method + i * 4;
             uint32_t v = R32(p);
             ApplyVisibilityMethod(m, v);
+            ApplyCallbackMethod(m, v);
             if (!ApplyConstant(m, v)) ApplyImmediate(m, v);
         }
     }
@@ -1527,6 +1576,7 @@ static void RunCommands(uint32_t begin, uint32_t end) {
         for (uint32_t i = 0; i < n; i++, p += 4) {
             uint32_t m = head & 0x40000000 ? method : method + i * 4, v = R32(p);
             ApplyVisibilityMethod(m, v);
+            ApplyCallbackMethod(m, v);
             if (m == kInlineArray) {
                 if (prim) vertices.push_back(v);
             } else if (m == kBeginEnd) {

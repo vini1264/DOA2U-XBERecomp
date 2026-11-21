@@ -225,7 +225,11 @@ public:
         Cmd c{Op::GetReport};
         c.a = report;
         cur_->cmds.push_back(c);
+        reports_asked_++;
     }
+    // the worker writes them as the GPU finishes, so a report asked for here is pending until the count catches up
+    bool ReportsPending() const override { return reports_asked_ > inner_->ReportsWritten(); }
+    uint64_t ReportsWritten() const override { return inner_->ReportsWritten(); }
 
     uint32_t Fence() override { return uint32_t(cur_->id); }
     bool FencePending(uint32_t fence) override { return fence > done_.load(); }
@@ -472,6 +476,7 @@ private:
     }
 
     std::unique_ptr<Backend> inner_;
+    uint64_t reports_asked_ = 0;  // the title's thread only
     std::vector<Range> ranges_;
 
     // the title's thread

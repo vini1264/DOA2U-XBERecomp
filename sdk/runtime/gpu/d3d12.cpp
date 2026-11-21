@@ -483,6 +483,8 @@ public:
     void ClearReport() override { counted_.clear(); }
     // done once the list being recorded, the next fence value, has run
     void GetReport(uint32_t report) override { reports_.push_back({report, counted_, fence_value_ + 1}); }
+    bool ReportsPending() const override { return !reports_.empty(); }
+    uint64_t ReportsWritten() const override { return reports_written_.load(std::memory_order_acquire); }
 
     ID3D12Device* Device() override { return dev_.Get(); }
     ID3D12GraphicsCommandList* List() override { return cl_.Get(); }
@@ -590,6 +592,7 @@ private:
                      const DrawTextures& stages);
     void CaptureTextures(const State& s, const DrawTextures& stages);
     void EndDrawCapture(const State& s, const Assembled& a, uint32_t count, const DrawConstants& c);
+    void CaptureFixed(const State& s);
     void CaptureInputs(const State& s, const Assembled& a, const DrawConstants& c);
     void CaptureShaders(const State& s, const Assembled& a, const DrawShaders& sh, const PixelKey& pk);
     void CaptureShader(const char* kind, uint64_t key, const std::string& src);
@@ -847,6 +850,7 @@ private:
     uint32_t query_next_ = 0;
     std::vector<Query> counted_;  // since the last ClearReport
     std::deque<Report> reports_;
+    std::atomic<uint64_t> reports_written_{0};
     bool tearing_ = false;
     uint64_t presents_ = 0;
     double fps_ = 0;
@@ -2814,7 +2818,10 @@ void FillCombinerConstants(const State& s, DrawConstants& c) {
     Color(s.rs[kRsTextureFactor], c.tfactor);
 }
 
-constexpr float kGlowBoxTexels = 3.0f;  // console texels across the box each wide tap averages
+// console texels across the box each wide tap averages: 2 is the console's own bilinear tap on a texel corner, the
+// spot a title shrinking a target by whole factors aims its taps at (a wider box flattens the peaks a bright pass
+// keeps, and the glow it feeds comes out dimmer and redder)
+constexpr float kGlowBoxTexels = 2.0f;
 
 void D3D12Backend::FillTexelConstants(int i, const TextureDesc& d, const DrawTextures& stages, DrawConstants& c) {
     c.texsize[i][0] = float(d.width);
@@ -3154,6 +3161,41 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
     fprintf(cap_, " | vp %u %u %u %u scissors %u [%u %u %u %u] surf %ux%u", s.viewport.x, s.viewport.y, s.viewport.w,
             s.viewport.h, s.scissor_count, s.scissors[0], s.scissors[1], s.scissors[2], s.scissors[3], surf_w, surf_h);
     CaptureTextures(s, stages);
+    CaptureFixed(s);
+}
+
+// diag: the fixed function state a draw without a vertex program runs with; stages, then lighting
+void D3D12Backend::CaptureFixed(const State& s) {
+    if (s.vs && (s.vs_handle & 1)) return;
+    fprintf(cap_, "\n     ff tfactor %08X", s.rs[kRsTextureFactor]);
+    for (int t = 0; t < 4; t++) {
+        const auto& x = s.tss[size_t(t)];
+        if (x[kTssColorOp] <= 1 && t) break;  // D3DTOP_DISABLE ends the cascade
+        fprintf(cap_, " | st%d op %u %X %X aop %u %X %X tci %X ttf %X", t, x[kTssColorOp], x[kTssColorArg1],
+                x[kTssColorArg2], x[kTssAlphaOp], x[kTssAlphaArg1], x[kTssAlphaArg2], x[kTssTexCoordIndex],
+                x[kTssTextureTransformFlags]);
+    }
+    if (!s.rs[kRsLighting]) return;
+    auto fl = [](uint32_t u) {
+        float f;
+        std::memcpy(&f, &u, 4);
+        return f;
+    };
+    const auto& m = s.material;
+    fprintf(cap_, "\n     light spec %u normalize %u localviewer %u colorvertex %u amb %08X enable %X", s.rs[kRsSpecularEnable],
+            s.rs[kRsNormalizeNormals], s.rs[kRsLocalViewer], s.rs[kRsColorVertex], s.rs[kRsAmbient], s.light_enable);
+    fprintf(cap_, "\n     mat d %.3f %.3f %.3f %.3f a %.3f %.3f %.3f s %.3f %.3f %.3f e %.3f %.3f %.3f power %.2f", m[0], m[1],
+            m[2], m[3], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14], m[16]);
+    for (int i = 0; i < 8; i++) {
+        if (!((s.light_enable >> i) & 1)) continue;
+        const auto& l = s.lights[size_t(i)];
+        fprintf(cap_, "\n     l%d type %u d %.3f %.3f %.3f s %.3f %.3f %.3f a %.3f %.3f %.3f pos %.2f %.2f %.2f dir %.3f %.3f %.3f",
+                i, l[0], fl(l[1]), fl(l[2]), fl(l[3]), fl(l[5]), fl(l[6]), fl(l[7]), fl(l[9]), fl(l[10]), fl(l[11]),
+                fl(l[13]), fl(l[14]), fl(l[15]), fl(l[16]), fl(l[17]), fl(l[18]));
+    }
+    const float* w = s.transforms[kTsWorld].data();
+    fprintf(cap_, "\n     world %.3f %.3f %.3f | %.3f %.3f %.3f | %.3f %.3f %.3f", w[0], w[1], w[2], w[4], w[5], w[6], w[8], w[9],
+            w[10]);
 }
 
 // small draws: their inputs and constants; then ends the draw's line
@@ -3418,6 +3460,7 @@ void D3D12Backend::DeliverReports() {
         std::atomic_thread_fence(std::memory_order_release);
         kernel::W32(r.va + kStatus, 0);
         reports_.pop_front();
+        reports_written_.fetch_add(1, std::memory_order_release);
     }
 }
 

@@ -43,6 +43,9 @@ public:
     // count, GetReport writes it to a 16 byte report once the GPU is past those draws; without them it stays pending
     virtual void ClearReport() {}
     virtual void GetReport(uint32_t /*report*/) {}
+    // reports asked for that the GPU has not written yet (the title's thread); how many it has written (any thread)
+    virtual bool ReportsPending() const { return false; }
+    virtual uint64_t ReportsWritten() const { return 0; }
 
     // the XDK's fences and busy checks against the render thread; a backend that draws at once is never behind
     virtual uint32_t Fence() { return ++fence_; }

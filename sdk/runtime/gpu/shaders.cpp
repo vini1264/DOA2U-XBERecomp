@@ -58,9 +58,11 @@ const char* kCommonTail = R"(    float4 spread[4];
     float4x4 wvb[3];
     float4x4 wvnb[3];
     float4x4 pvp;
-    float4 psize;
+)";
+// the point size constants close the buffer, declared by the fixed-function vertex shaders of point sprites only: a
+// shader's source is its key in shadercache.bin, so the others keep the source (and the cache entries) they had
+const char* kPointSizeTail = R"(    float4 psize;
     float4 pscale;
-};
 )";
 
 const ShaderHooks& Hooks() {
@@ -68,7 +70,9 @@ const ShaderHooks& Hooks() {
     return g_shader_hooks ? *g_shader_hooks : plain;
 }
 
-std::string Common() { return kCommonHead + Hooks().Constants() + kCommonTail; }
+std::string Common(bool point_size = false) {
+    return kCommonHead + Hooks().Constants() + kCommonTail + (point_size ? kPointSizeTail : "") + "};\n";
+}
 
 // vertex programs
 
@@ -836,7 +840,7 @@ FixedKey MakeFixedKey(const State& s) {
 
 // D3D's fixed function vertex pipeline: transform, lighting in view space, texture coordinate generation and transforms
 std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode, const FixedKey& f) {
-    std::string s = Common();
+    std::string s = Common(f.sprite != 0);
     s += kVsHelpers;
     s += VsInputs(regs, decode);
     s += kVsPrologue;
@@ -883,7 +887,10 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
         s += "    float4 md = " + src(0, "mat[0]") + ", ms = " + src(1, "mat[2]") + ", ma = " + src(2, "mat[1]") +
              ", me = " + src(3, "mat[3]") + ";\n";
         s += "    float3 la = 0, ld = 0, ls = 0;\n";
-        s += (f.light & 4) ? "    float3 eye = -normalize(vp);\n" : "    float3 eye = float3(0, 0, 1);\n";
+        // toward the viewer: from the vertex to the camera, or with a distant viewer the camera's own axis; view space
+        // looks down +z, so that is -z (with +z the half vector turns away from every face the camera sees, and a
+        // material's highlights only light faces turned away)
+        s += (f.light & 4) ? "    float3 eye = -normalize(vp);\n" : "    float3 eye = float3(0, 0, -1);\n";
         for (int n = 0; n < 8; n++) {
             uint32_t type = (f.types >> (n * 2)) & 3;  // D3DLIGHTTYPE: 1 point, 2 spot, 3 directional
             if (!type) continue;
