@@ -459,7 +459,25 @@ std::string TexFetch(const PixelKey& k, int i) {
             return s;
         case 6:
         case 7:  // bump env map: signed du dv through the 2x2 matrix, 7 scales by luminance
-            s = F("float2 duv%d = sbyte(t%u.bgr, 0, 256, 127).xy;\n", i, in);
+            // the du dv are signed: filtered as the unsigned bytes the host holds, two texels either side of zero
+            // (0x01 and 0xFF) blend to 0x80, the most negative value, and the offsets crack along every such seam.
+            // A plain 2D source is read again as its four texels, each made signed, then blended
+            if (const TexInfo& src = k.tex[in]; ((k.tex_modes >> (in * 5)) & 0x1F) == 1 && src.kind == kTex2D && !src.shadow &&
+                                                !(src.flags & kTexWide))
+                s = F("float2 duv%d;\n{\n"
+                      "float2 uv = %s;\n"
+                      "float w, h;\n"
+                      "tex%u.GetDimensions(w, h);\n"
+                      "float2 f = frac(uv * float2(w, h) - 0.5);\n"
+                      "float4 u = tex%u.GatherBlue(smp%u, uv) * 255, v = tex%u.GatherGreen(smp%u, uv) * 255;\n"
+                      "u = (u - (u >= 128 ? 256 : 0)) / 127;\n"
+                      "v = (v - (v >= 128 ? 256 : 0)) / 127;\n"
+                      // gather order: x left bottom, y right bottom, z right top, w left top
+                      "duv%d = lerp(lerp(float2(u.w, v.w), float2(u.z, v.z), f.x), lerp(float2(u.x, v.x), float2(u.y, v.y), f.x), f.y);\n"
+                      "}\n",
+                      i, TexUv(src, int(in), F("tc%u.xy / tc%u.w", in, in)).c_str(), in, in, in, in, in, i);
+            else
+                s = F("float2 duv%d = sbyte(t%u.bgr, 0, 256, 127).xy;\n", i, in);
             s += put(sample2(F("%s.xy + float2(dot(bumpmat[%d].xz, duv%d), dot(bumpmat[%d].yw, duv%d))", q, i, i, i, i)));
             if (mode == 7) s += F("t%d *= bumplum[%d].x * t%u.r + bumplum[%d].y;\n", i, i, in, i);
             return s;
