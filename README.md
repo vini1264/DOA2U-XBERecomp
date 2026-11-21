@@ -19,8 +19,8 @@ The latest version of [DOA2U-XBERecomp](https://github.com/vini1264/DOA2U-XBERec
 
 <table>
   <tr>
-    <td><img src="https://github.com/user-attachments/assets/9e6637c2-689b-43d5-82fd-032ec6241631"></td>
-    <td><img src="https://github.com/user-attachments/assets/a8c8c817-1b44-4cd0-9939-3367c65d108d"></td>
+    <td><img src="https://github.com/user-attachments/assets/80c44eab-bd2a-4960-8fbe-76f32d0dc761"></td>
+    <td><img src="https://github.com/user-attachments/assets/593dfe56-ab4e-4e4e-a780-00fe5c52d44d"></td>
   </tr>
 </table>
 
