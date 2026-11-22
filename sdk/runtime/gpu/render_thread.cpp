@@ -191,7 +191,13 @@ public:
         // the title records one frame while the one before it draws, on the GPU too: a GPU bound frame rate then paces
         // the game like a frame rate cap, and the frame times the game measures match the frames shown
         Wait(last_present_, WaitFor::Frame, nullptr);
-        if (presents_) inner_->WaitGpuFrame(presents_ - 1);
+        if (presents_) {
+            if (!t_wait_idle) {
+                inner_->WaitGpuFrame(presents_ - 1);
+            } else {
+                while (!inner_->WaitGpuFrameFor(presents_ - 1, kWaitIdleMs)) RunWaitIdle();
+            }
+        }
         presents_++;
         last_present_ = id;
     }
@@ -404,7 +410,17 @@ private:
         auto t = Clock::now();
         {
             std::unique_lock lock(m_);
-            done_cv_.wait(lock, [&] { return done_.load() >= id; });
+            auto done = [&] { return done_.load() >= id; };
+            if (!t_wait_idle) {
+                done_cv_.wait(lock, done);
+            } else {
+                // a long wait lets the title's thread do its per frame work meanwhile
+                while (!done_cv_.wait_for(lock, std::chrono::milliseconds(kWaitIdleMs), done)) {
+                    lock.unlock();
+                    RunWaitIdle();
+                    lock.lock();
+                }
+            }
         }
         uint64_t ns = Ns(t);
         g_perf_wait_ns += ns;

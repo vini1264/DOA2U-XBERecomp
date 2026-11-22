@@ -474,6 +474,7 @@ public:
               float src_kx, float src_ky) override;
     void Present(const Surface& front) override;
     void WaitGpuFrame(uint64_t n) override;
+    bool WaitGpuFrameFor(uint64_t n, uint32_t ms) override;
     void Sync(uint32_t data, uint32_t size) override;
     void SyncLate(uint32_t data) override;
     bool DeliverLate(uint32_t data) override;
@@ -748,6 +749,7 @@ private:
     ComPtr<ID3D12Resource> bb_[kFrames];
     ComPtr<ID3D12Fence> fence_;
     HANDLE event_ = nullptr;
+    HANDLE gpu_frame_event_ = nullptr;  // WaitGpuFrameFor, on the title's thread
     uint64_t fence_value_ = 0;
     Frame frames_[kFrames];
     uint64_t frame_ = 0;
@@ -4083,6 +4085,20 @@ void D3D12Backend::Present(const Surface& front) {
 void D3D12Backend::WaitGpuFrame(uint64_t n) {
     uint64_t fence = present_fence_[n % (kFrames + 1)].load();
     if (fence > fence_->GetCompletedValue()) fence_->SetEventOnCompletion(fence, nullptr);
+}
+
+bool D3D12Backend::WaitGpuFrameFor(uint64_t n, uint32_t ms) {
+    uint64_t fence = present_fence_[n % (kFrames + 1)].load();
+    if (fence <= fence_->GetCompletedValue()) return true;
+    if (!gpu_frame_event_) gpu_frame_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!gpu_frame_event_) {
+        WaitGpuFrame(n);
+        return true;
+    }
+    fence_->SetEventOnCompletion(fence, gpu_frame_event_);
+    WaitForSingleObject(gpu_frame_event_, ms);
+    // an earlier timed out asking can leave the event set: the fence decides
+    return fence <= fence_->GetCompletedValue();
 }
 
 void D3D12Backend::ApplySettings() {

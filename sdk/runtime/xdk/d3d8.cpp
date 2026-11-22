@@ -104,6 +104,9 @@ bool InCode(uint32_t va);  // cpu/dispatch.cpp
 #define HAS_D3DDevice_DrawIndexedVerticesUP 0
 #endif
 
+// dsound.cpp: the title's pending sound packet callbacks, run on its thread
+void DirectSoundWorkWhileBlocked(X86Context& ctx);
+
 namespace d3d {
 
 namespace {
@@ -497,8 +500,12 @@ HLE_STDCALL(D3DResource_IsBusy, 1) {
     return g_backend && g_backend->Busy(res) ? 1 : 0;
 }
 HLE_STDCALL(D3D_BlockOnTime, 2) { return 0; }
+// what the title's thread does while a swap or a fence keeps it waiting (gpu::WaitIdle)
+void SoundWorkWhileBlocked(void* ctx) { ::DirectSoundWorkWhileBlocked(*static_cast<X86Context*>(ctx)); }
+
 HLE_STDCALL(D3DDevice_BlockOnFence, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    gpu::WaitIdle idle(SoundWorkWhileBlocked, &ctx);
     if (g_backend) g_backend->WaitFence(a[0]);
     return 0;
 }
@@ -716,7 +723,10 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
                  g_buffers[0], R32(g_buffers[0] + 4));
         }
     }
-    if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
+    if (g_backend) {
+        gpu::WaitIdle idle(SoundWorkWhileBlocked, &ctx);
+        g_backend->Present(SurfaceOf(g_buffers[1]));
+    }
     app::Pace();
     RunCallbacks(ctx);
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data

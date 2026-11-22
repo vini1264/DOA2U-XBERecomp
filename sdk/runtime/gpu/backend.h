@@ -55,6 +55,11 @@ public:
     virtual void WaitResource(uint32_t /*resource*/) {}
     // until the GPU has drawn present number n, counted from 0; any thread
     virtual void WaitGpuFrame(uint64_t /*n*/) {}
+    // the same for at most ms milliseconds: true once present n is drawn; the title's thread only
+    virtual bool WaitGpuFrameFor(uint64_t n, uint32_t /*ms*/) {
+        WaitGpuFrame(n);
+        return true;
+    }
 
 private:
     uint32_t fence_ = 0;
@@ -68,6 +73,34 @@ std::unique_ptr<Backend> CreateThreadedBackend(std::unique_ptr<Backend> inner);
 inline std::atomic<uint64_t> g_perf_capture_ns{0}, g_perf_wait_ns{0}, g_perf_waits{0};
 inline std::atomic<uint64_t> g_perf_wait_kind_ns[6];  // read-back, resource, fence, flush, copy, next frame
 inline std::atomic<uint64_t> g_perf_sync_late{0}, g_perf_sync_block{0};  // read-backs the title waited for, by cause
+
+// Work for the title's thread to do while it waits on the render thread or the GPU, every kWaitIdleMs of waiting:
+// the XDK's DirectSoundDoWork callbacks, which a title calls once a frame and which a long wait would hold back.
+constexpr uint32_t kWaitIdleMs = 10;
+inline thread_local void (*t_wait_idle)(void*) = nullptr;
+inline thread_local void* t_wait_idle_arg = nullptr;
+struct WaitIdle {
+    void (*prev)(void*);
+    void* prev_arg;
+    WaitIdle(void (*fn)(void*), void* arg) : prev(t_wait_idle), prev_arg(t_wait_idle_arg) {
+        t_wait_idle = fn;
+        t_wait_idle_arg = arg;
+    }
+    ~WaitIdle() {
+        t_wait_idle = prev;
+        t_wait_idle_arg = prev_arg;
+    }
+    WaitIdle(const WaitIdle&) = delete;
+    WaitIdle& operator=(const WaitIdle&) = delete;
+};
+inline void RunWaitIdle() {
+    if (!t_wait_idle) return;
+    auto fn = t_wait_idle;
+    void* arg = t_wait_idle_arg;
+    t_wait_idle = nullptr;  // no second round from a wait inside it
+    fn(arg);
+    t_wait_idle = fn;
+}
 
 // F3: save the next frame, every draw and target, under diag::CaptureDir
 inline std::atomic<bool> g_capture{false};

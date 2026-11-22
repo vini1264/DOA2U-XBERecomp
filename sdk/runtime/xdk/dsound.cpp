@@ -1066,8 +1066,10 @@ HLE_STDCALL(IDirectSound_SetOrientation, 8) {
     }
     return 0;
 }
+thread_local bool t_does_work = false;  // the thread that calls DirectSoundDoWork
 HLE_STDCALL(DirectSoundDoWork, 0) {
     g_pumped = NowMs();
+    t_does_work = true;
     std::vector<Done> done;
     {
         std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -1076,6 +1078,22 @@ HLE_STDCALL(DirectSoundDoWork, 0) {
     }
     Run(ctx, done);
     return 0;
+}
+// The title's thread held up in a D3D wait (a swap waiting on the GPU, a fence): its packet callbacks run there as
+// DirectSoundDoWork would run them next frame, so a stream does not run dry while the title cannot call it. Only
+// for the thread that calls DirectSoundDoWork; the others' callbacks would run beside the title's stream code.
+void DirectSoundWorkWhileBlocked(X86Context& ctx) {
+    if (!t_does_work) return;
+    std::vector<Done> done;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_lock);
+        if (g_done.empty()) return;
+        done.assign(g_done.begin(), g_done.end());
+        g_done.clear();
+    }
+    g_pumped = NowMs();
+    LOG_FIRST(4, "dsound: %zu stream callbacks run while the title waits on the GPU", done.size());
+    Run(ctx, done);
 }
 // starts together every voice played or unpaused with the synch playback flag
 HLE_STDCALL(IDirectSound_SynchPlayback, 1) {
