@@ -1,4 +1,4 @@
-// Quits the game from the title screen.
+// Quitting from the title screen.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -17,12 +17,14 @@
 #include <imgui.h>
 
 #include "app/app.h"
+#include "core/log.h"
 #include "game/title_quit.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
 
 X86_EXTERN_FUNC(__imp__sub_000D9DB0);
+X86_EXTERN_FUNC(__imp__sub_0013B850);
 
 namespace {
 constexpr uint32_t kPageBusy = 0x00068EF0;   // nonzero: the attract pages are changing
@@ -85,6 +87,70 @@ X86_FUNC(sub_000D9DB0) {
         g_asking = false;  // the attract pages took over
     }
     __imp__sub_000D9DB0(ctx, base);
+}
+
+namespace {
+constexpr uint32_t kOnlineItem = 0x12;         // DOA ONLINE's id in the item table
+constexpr uint32_t kItems = 0x006E20A0;        // the items: 0x1C each, the id first
+constexpr uint32_t kItemSize = 0x1C;
+constexpr uint32_t kListed = 0x00DF5D18;       // bytes: the items shown, in order
+constexpr uint32_t kListedCount = 0x006E2260;  // byte
+constexpr uint32_t kCursor = 0x00DF5698 + 0x120;  // byte: the carousel's place in the list
+constexpr uint32_t kSlots = 0x006E2264;        // 4 x 8 bytes: [0] port, [2] nonzero when the slot plays
+constexpr uint32_t kMenuPressed = 0x0087D268;  // port 0's buttons pressed this frame as the menus read them
+constexpr uint32_t kMenuStride = 0x30;
+constexpr uint32_t kChoose = 0x110, kBack = 0x220;  // A or START; B or BACK
+
+std::atomic<bool> g_online{false};
+int g_swallow = 0;  // frames after the notice closes in which its answer keeps away from the carousel
+bool g_online_esc_down = true;
+bool g_online_enter_down = true;
+
+uint32_t CursorItem() {
+    uint8_t at = G<uint8_t>(kCursor);
+    const uint8_t count = G<uint8_t>(kListedCount);
+    if (at > count) at = count;
+    return R32(kItems + uint32_t(G<uint8_t>(kListed + at)) * kItemSize);
+}
+
+uint32_t MenuPressed() {
+    uint32_t any = 0;
+    for (uint32_t i = 0; i < 4; i++)
+        if (G<uint8_t>(kSlots + i * 8 + 2)) any |= R32(kMenuPressed + uint32_t(G<uint8_t>(kSlots + i * 8)) * kMenuStride);
+    return any;
+}
+}  // namespace
+
+// int ModeSelectFrame(MenuState* state), cdecl: 1 to stay
+X86_FUNC(sub_0013B850) {
+    const uint32_t state = R32(ctx.esp + 4);
+    const bool esc = KeyPressed(VK_ESCAPE, g_online_esc_down);
+    const bool enter = KeyPressed(VK_RETURN, g_online_enter_down);
+    if (R32(state + 0x20) == 1) {
+        const uint32_t pressed = MenuPressed();
+        bool hold = false;
+        if (g_online) {
+            if ((pressed & (kChoose | kBack)) || esc || enter) {
+                g_online = false;
+                g_swallow = 2;
+            }
+            hold = true;
+        } else if (g_swallow > 0) {
+            g_swallow--;
+            hold = (pressed & (kChoose | kBack)) != 0;
+        } else if (pressed & kChoose) {
+            const uint32_t item = CursorItem();
+            if (item == kOnlineItem) g_online = hold = true;
+        }
+        if (hold) {
+            ctx.eax = 1;
+            ctx.esp += 4;  // pop the return address, as the function's ret would
+            return;
+        }
+    } else {
+        g_online = false;
+    }
+    __imp__sub_0013B850(ctx, base);
 }
 
 namespace {
@@ -151,7 +217,7 @@ void Window(void*) {
 }
 
 void Ui() {
-    if (!g_asking) return;
+    if (!g_asking && !g_online) return;
     const ImGuiIO& io = ImGui::GetIO();
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImFont* font = g_font ? g_font : ImGui::GetFont();
@@ -169,10 +235,15 @@ void Ui() {
     dl->AddLine(ImVec2(0, top), ImVec2(w, top), IM_COL32(160, 160, 160, 160), std::max(1.0f, u));
     dl->AddLine(ImVec2(0, bottom), ImVec2(w, bottom), IM_COL32(160, 160, 160, 160), std::max(1.0f, u));
 
-    ShadowText(dl, font, 30 * u, cx, cy - 36 * u, "QUIT GAME?", kWhite);
+    if (g_online) {
+        ShadowText(dl, font, 26 * u, cx, cy - 38 * u, "DOA ONLINE IS NOT AVAILABLE", kWhite);
+        ShadowText(dl, font, 15 * u, cx, cy - 9 * u, "This port has no Xbox Live.", IM_COL32(200, 200, 200, 255));
+    } else {
+        ShadowText(dl, font, 30 * u, cx, cy - 36 * u, "QUIT GAME?", kWhite);
+    }
 
     // the answers as the game's footer writes them: a face button, the keyboard's key, then the word
-    const float size = 20 * u, r = 11 * u, y = cy + 12 * u;
+    const float size = 20 * u, r = 11 * u, y = g_online ? cy + 22 * u : cy + 12 * u;
     const float key_size = 11 * u;
     const float gap = 6 * u, between = 40 * u;
     struct Answer {
@@ -181,16 +252,24 @@ void Ui() {
         const char* key;
         const char* word;
     };
-    const Answer answers[2] = {
+    const Answer question[2] = {
         {"A", IM_COL32(40, 170, 40, 255), IM_COL32(130, 230, 110, 255), "ENTER", "Yes"},
         {"B", IM_COL32(200, 30, 30, 255), IM_COL32(250, 110, 100, 255), "ESC", "No"},
     };
-    float total = between;
-    for (const Answer& a : answers)
+    const Answer notice[1] = {
+        {"A", IM_COL32(40, 170, 40, 255), IM_COL32(130, 230, 110, 255), "ENTER", "OK"},
+    };
+    const Answer* first = g_online ? notice : question;
+    const Answer* last = g_online ? notice + 1 : question + 2;
+    float total = g_online ? 0 : between;
+    for (const Answer* p = first; p != last; ++p) {
+        const Answer& a = *p;
         total += 2 * r + gap + KeyCapWidth(font, key_size, a.key) + gap +
                  font->CalcTextSizeA(size, FLT_MAX, 0, a.word).x;
+    }
     float x = cx - total * 0.5f;
-    for (const Answer& a : answers) {
+    for (const Answer* p = first; p != last; ++p) {
+        const Answer& a = *p;
         FaceButton(dl, font, ImVec2(x + r, y), r, a.base, a.light, a.button);
         x += 2 * r + gap;
         KeyCap(dl, font, key_size, ImVec2(x, y), a.key);
