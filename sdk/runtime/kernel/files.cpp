@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <functional>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -78,15 +79,10 @@ struct File : Object {
     size_t next = 0;
     bool listed = false;
     bool delete_on_close = false;
+    uint64_t set_time = 0;  // a time the title gave the file (FileBasicInformation), FILETIME
     std::mutex io;  // threads sharing a handle: seek and transfer stay together
     File() : Object(ObjType::File) {}
-    ~File() override {
-        if (fp) std::fclose(fp);
-        if (delete_on_close) {
-            std::error_code ec;
-            fs::remove(host, ec);
-        }
-    }
+    ~File() override;
 };
 
 struct Link : Object {
@@ -98,6 +94,23 @@ uint64_t ToFileTime(fs::file_time_type t) {
     using namespace std::chrono;
     auto sys = time_point_cast<nanoseconds>(t - fs::file_time_type::clock::now() + system_clock::now());
     return uint64_t(sys.time_since_epoch().count() / 100 + 116444736000000000ll);
+}
+
+fs::file_time_type FromFileTime(uint64_t t) {
+    using namespace std::chrono;
+    system_clock::time_point sys{duration_cast<system_clock::duration>(
+        nanoseconds((int64_t(t) - 116444736000000000ll) * 100))};
+    return fs::file_time_type::clock::now() + duration_cast<fs::file_time_type::duration>(sys - system_clock::now());
+}
+
+// A host file keeps one time, its last write, which every time of the file reads back as. A time the title sets
+// goes there and is set again after the close, whose last writes would move it. DOA2 dates its HDD cache copies
+// with the disc file's time and copies them again at every start when the dates do not match.
+File::~File() {
+    if (fp) std::fclose(fp);
+    std::error_code ec;
+    if (delete_on_close) fs::remove(host, ec);
+    else if (set_time) fs::last_write_time(host, FromFileTime(set_time), ec);
 }
 
 void FillNetworkInfo(uint32_t out, uint64_t t, uint64_t size, bool dir) {
@@ -527,6 +540,12 @@ KERNEL_EXPORT(211, NtQueryInformationFile, 5) {
             G<uint8_t>(out + 0x15) = f->dir;  // Directory, after DeletePending
             IoStatus(iosb, kSuccess, 0x18);
             return kSuccess;
+        case 6:  // FileInternalInformation: a number for the file, the same on every open. XAPI's
+                 // GetFileInformationByHandle asks for it and fails without it (DOA2's HDD cache check reads its sizes
+                 // and times, found nothing and copied the cache again at every start).
+            W64(out, std::hash<std::string>{}(f->entry ? f->xbox : f->host.generic_string()));
+            IoStatus(iosb, kSuccess, 8);
+            return kSuccess;
         case 14:  // FilePositionInformation
             W64(out, f->pos);
             IoStatus(iosb, kSuccess, 8);
@@ -579,8 +598,17 @@ KERNEL_EXPORT(226, NtSetInformationFile, 5) {
             f->host = host;
             break;
         }
-        case 4:  // basic, times and attributes are not kept
+        case 4: {  // basic: creation, last access, last write, change; attributes are not kept
+            uint64_t t = R64(in + 0x10) ? R64(in + 0x10) : R64(in);
+            if (!t || t == ~0ull || f->entry) break;
+            if (f->fp) {
+                std::lock_guard<std::mutex> lock(f->io);
+                std::fflush(f->fp);
+            }
+            fs::last_write_time(f->host, FromFileTime(t), ec);
+            f->set_time = t;
             break;
+        }
         default:
             LOG_FIRST(8, "NtSetInformationFile: class %u", cls);
             return kInvalidParameter;

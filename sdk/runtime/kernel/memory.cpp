@@ -1,6 +1,7 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -15,6 +16,14 @@ namespace mem {
 
 static uint8_t* g_base = nullptr;
 static std::recursive_mutex g_lock;
+
+// Windows gives a committed page its memory on the first touch, a fault each; the console's memory is simply there.
+// A title that first writes a large buffer in the middle of play (a round's setup) would pay thousands of faults in
+// one frame, so memory is touched once when it is made: the console's RAM before the title runs, and committed
+// pages as they are committed (they are new and hold zeros, so writing a zero changes nothing).
+static void Touch(uint8_t* p, size_t size) {
+    for (size_t off = 0; off < size; off += kPage) reinterpret_cast<volatile uint8_t*>(p)[off] = 0;
+}
 
 uint8_t* Base() { return g_base; }
 
@@ -53,7 +62,11 @@ bool Init() {
         LOGE("memory: could not reserve the 4 GB guest space");
         return false;
     }
-    LOGI("memory: guest space at %p", static_cast<void*>(g_base));
+    auto t0 = std::chrono::steady_clock::now();
+    Touch(g_base + kContiguousBase, kPhysicalSize);
+    LOGI("memory: guest space at %p, %u MB of RAM touched in %.1f ms", static_cast<void*>(g_base),
+         kPhysicalSize >> 20,
+         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     return true;
 }
 
@@ -69,7 +82,11 @@ bool Commit(uint32_t va, uint32_t size) {
         LOGE("memory: commit %08X+%X failed", first, uint32_t(end - first));
         return false;
     }
-    for (uint64_t p = first; p < end; p += kPage) g_committed[size_t(p >> 12)] = 1;
+    for (uint64_t p = first; p < end; p += kPage) {
+        uint8_t& c = g_committed[size_t(p >> 12)];
+        if (!c) Touch(g_base + p, kPage);  // only pages new to this commit: the others hold the title's data
+        c = 1;
+    }
     return true;
 }
 

@@ -533,6 +533,8 @@ private:
     void Transition(ID3D12Resource* r, D3D12_RESOURCE_STATES& cur, D3D12_RESOURCE_STATES want) override;
     void Begin();
     void Submit(bool wait);
+    void Retire(Frame& f);
+    void ReleaseRetired();
     void WaitFence(uint64_t value);
     void SetFullViewport(uint32_t w, uint32_t h);
     void SetBlitTarget(D3D12_CPU_DESCRIPTOR_HANDLE rtv, uint32_t w, uint32_t h);
@@ -835,6 +837,9 @@ private:
     std::mutex late_lock_;                      // DeliverLate runs on the title's thread
     std::atomic<uint64_t> presents_seen_{0};    // presents_ for DeliverLate
     std::atomic<uint64_t> present_fence_[kFrames + 1] = {};  // by presents_, for WaitGpuFrame
+    // resources the GPU is done with, released a few each frame: a sweep of a stage's textures freed at once took a
+    // frame some 200 ms
+    std::deque<ComPtr<ID3D12Resource>> retired_;
     Assembled asm_;  // kept between draws for its buffers
     // visibility tests: an occlusion query per counted draw, summed into report memory once the GPU is done
     struct Query {
@@ -1073,7 +1078,7 @@ void D3D12Backend::Submit(bool wait) {
     if (wait) {
         WaitFence(fence_value_);
         f.alloc->Reset();
-        f.garbage.clear();
+        Retire(f);
         f.used = 0;
         f.srv = 0;
         view_sets_.clear();
@@ -3985,11 +3990,30 @@ void D3D12Backend::ResetFrame() {
         g_perf.wait += PerfMs(perf_wait);
     }
     f.alloc->Reset();
-    f.garbage.clear();
+    Retire(f);
+    ReleaseRetired();
     f.used = 0;
     f.srv = 0;
     cl_->Reset(f.alloc.Get(), nullptr);
     Begin();
+}
+
+// the frame's garbage, which its fence has passed, joins the resources waiting to be released
+void D3D12Backend::Retire(Frame& f) {
+    for (auto& r : f.garbage) retired_.push_back(std::move(r));
+    f.garbage.clear();
+}
+
+// releasing a texture can cost the driver a millisecond or more: a few each frame, within about a millisecond
+void D3D12Backend::ReleaseRetired() {
+    constexpr size_t kAtLeast = 2;
+    constexpr double kBudgetMs = 1.0;
+    auto t0 = PerfClock::now();
+    size_t n = 0;
+    while (!retired_.empty() && (n < kAtLeast || PerfMs(t0) < kBudgetMs)) {
+        retired_.pop_front();
+        n++;
+    }
 }
 
 void D3D12Backend::CountFps() {
